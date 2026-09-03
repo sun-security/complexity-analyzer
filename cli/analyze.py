@@ -97,8 +97,7 @@ def _apply_max_score(prompt_text: str) -> str:
     if max_score == DEFAULT_MAX_SCORE:
         return prompt_text
     return (
-        prompt_text
-        .replace("1–10 integer scale", f"1–{max_score} integer scale")
+        prompt_text.replace("1–10 integer scale", f"1–{max_score} integer scale")
         .replace("<int 1..10>", f"<int 1..{max_score}>")
         .replace("between 1 and 10 inclusive", f"between 1 and {max_score} inclusive")
     )

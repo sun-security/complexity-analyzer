@@ -36,7 +36,10 @@ dev = [
     "pytest>=7.0.0",
     "pytest-mock>=3.10.0",
     "black>=23.0.0",
-    "ruff>=0.1.0",
+    # Pinned (sun-security fork): newer ruff releases broadened the default
+    # rule set and fail on pre-existing upstream code; the fork only carries
+    # the max-score patch, not a lint overhaul.
+    "ruff==0.8.4",
 ]
 
 [project.scripts]
