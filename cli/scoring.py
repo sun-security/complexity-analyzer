@@ -53,8 +53,11 @@ def parse_complexity_response(response_text: str) -> Dict[str, Any]:
     except (ValueError, TypeError):
         raise InvalidResponseError(f"Invalid complexity value: {data['complexity']}")
 
-    # Clamp to valid range
-    complexity = max(1, min(10, complexity))
+    # Clamp to valid range (upper bound configurable via COMPLEXITY_MAX_SCORE —
+    # sun-security fork; upstream hardcodes 10).
+    from .constants import get_max_score
+
+    complexity = max(1, min(get_max_score(), complexity))
 
     # Extract and sanitize explanation
     explanation = str(data.get("explanation", "")).strip()

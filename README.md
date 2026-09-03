@@ -365,3 +365,11 @@ black cli tests
 # Lint
 ruff check cli tests
 ```
+
+## sun-security fork
+
+This fork adds one knob over upstream: **`COMPLEXITY_MAX_SCORE`** (env var,
+default `10`, accepted range 2–1000). Setting it rewrites the embedded
+prompt's scale bounds and the response clamp together, so e.g.
+`COMPLEXITY_MAX_SCORE=100` scores PRs on a 1–100 scale. Custom `--prompt-file`
+prompts are never rewritten — author them for the scale you configure.
