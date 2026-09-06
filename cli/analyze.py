@@ -78,40 +78,30 @@ def load_prompt(prompt_file: Optional[Path] = None) -> str:
             raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
         return read_text_file(prompt_file)
 
+    from .constants import get_dimension_cap, get_max_score, use_dimension_scoring
+
+    if use_dimension_scoring():
+        # Wide scale → per-dimension scoring prompt (see constants.py for why).
+        dim_prompt_path = Path(__file__).parent / "prompt" / "dimensions.txt"
+        if not dim_prompt_path.exists():
+            raise FileNotFoundError(f"Dimensions prompt not found: {dim_prompt_path}")
+        text = read_text_file(dim_prompt_path)
+        return text.replace("{{DIM_CAP}}", str(get_dimension_cap())).replace(
+            "{{MAX_SCORE}}", str(get_max_score())
+        )
+
     # Load default embedded prompt
     default_prompt_path = Path(__file__).parent / "prompt" / "default.txt"
     if not default_prompt_path.exists():
         raise FileNotFoundError(f"Default prompt not found: {default_prompt_path}")
-    return _apply_max_score(read_text_file(default_prompt_path))
+    return read_text_file(default_prompt_path)
 
 
-def _apply_max_score(prompt_text: str) -> str:
-    """
-    Rewrite the embedded prompt's scale when COMPLEXITY_MAX_SCORE is set
-    (sun-security fork). The default prompt states the 1-10 scale as a header
-    plus a full rubric of en-dash anchor bands ("Low complexity (1–3)",
-    "9–10: Very complex", …) — rewriting only the header leaves the model
-    anchored to 1-10 by the rubric (observed in the first backfill: 457/459
-    scores ≤8), so every en-dash range is scaled proportionally. Bands map
-    contiguously: lower L → (L-1)*f+1, upper U → U*f with f = max/10, which
-    also maps the 1–10 header itself to 1–max.
-    """
-    from .constants import DEFAULT_MAX_SCORE, get_max_score
-
-    max_score = get_max_score()
-    if max_score == DEFAULT_MAX_SCORE:
-        return prompt_text
-
-    factor = max_score / DEFAULT_MAX_SCORE
-
-    def scale_range(m: "re.Match[str]") -> str:
-        lo, hi = int(m.group(1)), int(m.group(2))
-        return f"{round((lo - 1) * factor) + 1}–{round(hi * factor)}"
-
-    prompt_text = re.sub(r"\b(\d+)–(\d+)\b", scale_range, prompt_text)
-    return prompt_text.replace("<int 1..10>", f"<int 1..{max_score}>").replace(
-        "between 1 and 10 inclusive", f"between 1 and {max_score} inclusive"
-    )
+# NOTE: earlier fork iterations rewrote the default prompt's 1-10 scale in
+# place (header, then the full rubric). Observed model behavior made that a
+# dead end — single-number scoring on a wide scale collapses onto landmark
+# values regardless of prompt wording — so a wide scale now switches to the
+# dimensions prompt above instead of rewriting the single-score prompt.
 
 
 def analyze_single_pr(

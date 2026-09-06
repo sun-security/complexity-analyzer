@@ -48,3 +48,22 @@ def get_max_score() -> int:
     except ValueError:
         return DEFAULT_MAX_SCORE
     return value if 2 <= value <= 1000 else DEFAULT_MAX_SCORE
+
+
+# Dimension scoring (sun-security fork, round 3): when the scale is wider than
+# the upstream 1-10, single-number scoring collapses onto landmarks (multiples
+# of 5, band centers — observed: 403 PRs scored exactly 65). A wide scale
+# therefore switches to FIVE per-dimension sub-scores (scope, logic,
+# integration, testing, risk), each 1..max/5, summed by the caller — sums of
+# small judgments spread naturally across the range.
+DIMENSION_KEYS = ("scope", "logic", "integration", "testing", "risk")
+
+
+def use_dimension_scoring() -> bool:
+    """Wide scale (max score > default) implies dimension scoring."""
+    return get_max_score() > DEFAULT_MAX_SCORE
+
+
+def get_dimension_cap() -> int:
+    """Per-dimension upper bound: max score split evenly across dimensions."""
+    return max(2, get_max_score() // len(DIMENSION_KEYS))

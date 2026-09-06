@@ -75,15 +75,15 @@ class TestMaxScoreOverride:
         result = parse_complexity_response('{"complexity": 73, "explanation": "x"}')
         assert result["complexity"] == 10
 
-    def test_default_prompt_rewritten(self, monkeypatch):
+    def test_wide_scale_loads_dimensions_prompt(self, monkeypatch):
         from cli.analyze import load_prompt
 
         monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
         text = load_prompt()
-        assert "1–100 integer scale" in text
-        assert "<int 1..100>" in text
-        assert "between 1 and 100 inclusive" in text
-        assert "1..10>" not in text
+        assert "FIVE independent" in text
+        assert "1–20 integer scale" in text
+        assert '"scope"' in text and '"risk"' in text
+        assert "{{DIM_CAP}}" not in text and "{{MAX_SCORE}}" not in text
 
     def test_default_prompt_untouched_at_default_scale(self, monkeypatch):
         from cli.analyze import load_prompt
@@ -96,18 +96,46 @@ class TestMaxScoreOverride:
 class TestMaxScoreRubricAndLabeler:
     """Fork round 2: the rubric bands must scale too, and the labeler bound."""
 
-    def test_rubric_bands_scaled(self, monkeypatch):
-        from cli.analyze import load_prompt
-
+    def test_dimensions_parse_and_rescale(self, monkeypatch):
         monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
-        text = load_prompt()
-        assert "1–100 integer scale" in text
-        assert "Low complexity (1–30)" in text
-        assert "Moderate complexity (31–60)" in text
-        assert "High complexity (61–100)" in text
-        assert "81–100: Very complex" in text
-        # No 1-10-scale anchors survive to re-anchor the model.
-        assert "(1–3)" not in text and "9–10:" not in text
+        r = parse_complexity_response(
+            '{"scope": 8, "logic": 15, "integration": 6, "testing": 11, "risk": 9, "explanation": "x"}'
+        )
+        # raw 49 → rescaled round((49-5)*99/95)+1 = 47
+        assert r["complexity"] == 47
+        assert r["dimensions"] == {
+            "scope": 8,
+            "logic": 15,
+            "integration": 6,
+            "testing": 11,
+            "risk": 9,
+        }
+        assert r["explanation"].startswith("[scope 8, logic 15,")
+
+    def test_dimensions_bounds(self, monkeypatch):
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        lo = parse_complexity_response(
+            '{"scope":1,"logic":1,"integration":1,"testing":1,"risk":1,"explanation":"x"}'
+        )
+        hi = parse_complexity_response(
+            '{"scope":20,"logic":25,"integration":20,"testing":20,"risk":20,"explanation":"x"}'
+        )
+        assert lo["complexity"] == 1
+        assert hi["complexity"] == 100  # 25 clamps to cap 20
+
+    def test_dimensions_missing_key_rejected(self, monkeypatch):
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        import pytest
+
+        with pytest.raises(InvalidResponseError):
+            parse_complexity_response(
+                '{"scope":5,"logic":5,"testing":5,"risk":5,"explanation":"x"}'
+            )
+
+    def test_single_mode_unaffected(self, monkeypatch):
+        monkeypatch.delenv("COMPLEXITY_MAX_SCORE", raising=False)
+        r = parse_complexity_response('{"complexity": 7, "explanation": "x"}')
+        assert r["complexity"] == 7
 
     def test_labeler_accepts_wide_scores(self, monkeypatch):
         from cli import github

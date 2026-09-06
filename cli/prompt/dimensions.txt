@@ -1,0 +1,93 @@
+Prompt-Version: 2-dimensions
+
+You are given:
+- A pull request (PR) diff excerpt (which may be truncated),
+- Lightweight PR metadata (stats JSON and title).
+
+Your task:
+Assess the *implementation complexity* of the PR by scoring FIVE independent
+dimensions, each on a 1–{{DIM_CAP}} integer scale. The dimensions are summed by the
+caller into a total complexity score (1–{{MAX_SCORE}}); you do NOT output a total.
+
+The goal is to approximate how "hard" the PR was to implement from a
+developer's perspective (design/implementation/testing effort), not how risky
+or operationally expensive it is. Think in terms of developer velocity: how
+much time/effort a competent team member would likely spend to implement and
+validate the change.
+
+Score each dimension INDEPENDENTLY on its own evidence. Do not anchor the
+dimensions to each other — a PR can be tiny in scope yet logically deep, or
+huge in scope yet mechanically trivial. Use the full 1–{{DIM_CAP}} range of each
+dimension; intermediate values (e.g. 7, 11, 13) are expected and encouraged.
+
+The five dimensions:
+
+1. `scope` — Breadth of the change.
+   How many modules/services/components/files carry MEANINGFUL changes (not
+   generated code, lockfiles, or mechanical renames)? 1 = one small spot;
+   {{DIM_CAP}} = sweeping change across many subsystems.
+
+2. `logic` — Depth of new or changed logic.
+   Algorithmic difficulty, subtle state handling, concurrency, edge-case
+   density. 1 = config value / copy change; {{DIM_CAP}} = intricate new algorithm or
+   subtle correctness reasoning throughout.
+
+3. `integration` — Surface area against other systems.
+   New/changed APIs, schemas, migrations, protocols, third-party services,
+   cross-service contracts. 1 = purely local change; {{DIM_CAP}} = new external
+   integration or breaking contract changes coordinated across systems.
+
+4. `testing` — Effort to validate the change.
+   Test code written/adapted, hard-to-test behavior, infrastructure needed to
+   exercise it. Judge the validation EFFORT the change demands, not whether
+   tests are present. 1 = trivially verifiable; {{DIM_CAP}} = extensive new test
+   machinery or very hard-to-reach behavior.
+
+5. `risk` — Care required to land the change safely.
+   Blast radius if wrong, backward compatibility, data migrations,
+   feature-flag/rollout choreography. 1 = inconsequential if wrong;
+   {{DIM_CAP}} = mistakes would corrupt data or break customers, demanding careful
+   staging.
+
+You MUST respond with a single strict JSON object of the form:
+{"scope": <int>, "logic": <int>, "integration": <int>, "testing": <int>, "risk": <int>, "explanation": "<short rationale>"}
+
+Constraints and formatting:
+- Every dimension must be an integer between 1 and {{DIM_CAP}} inclusive.
+- `explanation` must be a short, single-string rationale (no newlines) that
+  briefly justifies the most significant dimensions.
+- Do NOT include a total; the caller computes it.
+- Do NOT include any additional top-level keys.
+- Do NOT include any text before or after the JSON.
+- Do NOT include comments or trailing commas in the JSON.
+
+------------------------------------------------------------
+INPUT FORMAT AND SIGNALS
+------------------------------------------------------------
+
+You will typically see these fields:
+
+1. `diff_excerpt`
+   - Contains: PR URL, title, high-level stats summary, file list, and a
+     unified diff between `--- DIFF START ---` and `--- DIFF END ---`.
+   - The diff may be large or truncated.
+   - Many added/changed lines may be static data (CSV rows, JSON dependency
+     blobs, YAML config, lockfiles) rather than executable logic — these count
+     toward NO dimension beyond a minimal scope contribution.
+
+2. `stats_json`
+   - A machine-readable summary (additions, deletions, changedFiles, byExt,
+     byLang, fileCount). Use it to judge whether the diff is dominated by data
+     files vs code files. Raw line count is NOT complexity.
+
+3. `title`
+   - A short human-written description. Often indicates whether this is a
+     feature, infra change, bugfix, or refactor and hints at scope.
+
+Signals of LOW complexity regardless of size: generated code, vendored
+dependencies, mechanical renames, formatting-only churn, config value changes,
+copy/text updates, straightforward version bumps.
+
+Signals of HIGH complexity regardless of size: subtle concurrency or state
+machines, security-sensitive logic, novel algorithms, schema/data migrations,
+cross-service protocol changes, backward-compatibility shims.
