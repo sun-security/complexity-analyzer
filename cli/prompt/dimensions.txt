@@ -1,4 +1,4 @@
-Prompt-Version: 2-dimensions
+Prompt-Version: 3-dimensions-anchored
 
 You are given:
 - A pull request (PR) diff excerpt (which may be truncated),
@@ -15,39 +15,81 @@ or operationally expensive it is. Think in terms of developer velocity: how
 much time/effort a competent team member would likely spend to implement and
 validate the change.
 
+------------------------------------------------------------
+HOW TO SCORE — CALIBRATION
+------------------------------------------------------------
+
 Score each dimension INDEPENDENTLY on its own evidence. Do not anchor the
 dimensions to each other — a PR can be tiny in scope yet logically deep, or
-huge in scope yet mechanically trivial. Use the full 1–{{DIM_CAP}} range of each
-dimension; intermediate values (e.g. 7, 11, 13) are expected and encouraged.
+huge in scope yet mechanically trivial.
 
-The five dimensions:
+Expected base rates across a large codebase's PRs, PER DIMENSION:
+- Most PRs score in the LOW band of most dimensions.
+- Solid, ordinary feature work typically lands mid-band.
+- Scores of 15+ mark the hardest work of a MONTH, not of a normal week.
+- Scores of 18–20 are exceptional: reserve them for roughly the top 1-2% —
+  work a senior engineer would describe as among the hardest of the year.
+Intermediate values (7, 11, 13) are expected and encouraged; do not round to
+multiples of 5.
 
-1. `scope` — Breadth of the change.
-   How many modules/services/components/files carry MEANINGFUL changes (not
-   generated code, lockfiles, or mechanical renames)? 1 = one small spot;
-   {{DIM_CAP}} = sweeping change across many subsystems.
+Anchor ladders (authored for the default 1–20 dimension scale):
 
-2. `logic` — Depth of new or changed logic.
-   Algorithmic difficulty, subtle state handling, concurrency, edge-case
-   density. 1 = config value / copy change; {{DIM_CAP}} = intricate new algorithm or
-   subtle correctness reasoning throughout.
+1. `scope` — Breadth of meaningful change (ignore generated code, lockfiles,
+   mechanical renames, formatting churn).
+   1–3: one function/file or a config value.
+   4–7: one module or a small cluster of related files.
+   8–12: several modules or one service end-to-end.
+   13–16: cross-cutting change through many subsystems of a service, or
+          coordinated changes across a few services.
+   17–20: sweeping, coordinated change across many services/subsystems —
+          the kind of PR a team plans a quarter around. Rare.
+
+2. `logic` — Depth of new or changed reasoning.
+   1–3: copy/config/mechanical edits; no real logic.
+   4–7: straightforward feature logic; standard CRUD/wiring; simple branching.
+   8–12: non-trivial algorithms or state handling; meaningful edge-case
+         analysis; careful refactoring of tangled code.
+   13–16: subtle correctness reasoning throughout — concurrency, caching
+          invariants, distributed-state reconciliation, parser/protocol logic.
+   17–20: novel algorithm design or intricate correctness proofs; the logic
+          itself is the deliverable. Rare.
 
 3. `integration` — Surface area against other systems.
-   New/changed APIs, schemas, migrations, protocols, third-party services,
-   cross-service contracts. 1 = purely local change; {{DIM_CAP}} = new external
-   integration or breaking contract changes coordinated across systems.
+   1–3: purely local change; no contract touched.
+   4–7: consumes an existing internal API or adds an endpoint behind an
+        existing pattern.
+   8–12: schema/API changes with migration, new third-party service wired in,
+         or cross-service contract changes with straightforward compatibility.
+   13–16: breaking contract changes coordinated across services; multi-system
+          data migrations; new external integration with auth/webhooks/retry
+          semantics designed from scratch.
+   17–20: new protocol or platform-wide integration layer affecting most
+          services at once. Rare.
 
-4. `testing` — Effort to validate the change.
-   Test code written/adapted, hard-to-test behavior, infrastructure needed to
-   exercise it. Judge the validation EFFORT the change demands, not whether
-   tests are present. 1 = trivially verifiable; {{DIM_CAP}} = extensive new test
-   machinery or very hard-to-reach behavior.
+4. `testing` — Effort the change demands to validate (judge the EFFORT the
+   change requires, not whether tests are present in the diff).
+   1–3: trivially verifiable by inspection or an existing test.
+   4–7: routine unit tests adapted/added along with the change.
+   8–12: substantial new test coverage; behavior needs fixtures, fakes, or
+         careful case enumeration to exercise.
+   13–16: hard-to-reach behavior — time, concurrency, failure injection,
+          cross-service flows; new test infrastructure built to validate it.
+   17–20: validation is a project in itself (simulation harnesses, staged
+          production experiments). Rare.
 
 5. `risk` — Care required to land the change safely.
-   Blast radius if wrong, backward compatibility, data migrations,
-   feature-flag/rollout choreography. 1 = inconsequential if wrong;
-   {{DIM_CAP}} = mistakes would corrupt data or break customers, demanding careful
-   staging.
+   1–3: inconsequential if wrong; trivially revertible.
+   4–7: a bug would annoy users or engineers but is quickly caught and fixed.
+   8–12: touches money, data writes, or auth paths; needs review care and a
+         rollback story.
+   13–16: mistakes corrupt data or break customers; staged rollout, feature
+          flags, or backfill choreography required.
+   17–20: irreversible-if-wrong (mass data migration, crypto/key handling,
+          externally visible contract with no rollback). Rare.
+
+------------------------------------------------------------
+RESPONSE FORMAT
+------------------------------------------------------------
 
 You MUST respond with a single strict JSON object of the form:
 {"scope": <int>, "logic": <int>, "integration": <int>, "testing": <int>, "risk": <int>, "explanation": "<short rationale>"}
