@@ -913,8 +913,13 @@ def update_complexity_label(
     validate_owner_repo(owner, repo)
     validate_pr_number(pr)
 
-    if not 1 <= complexity <= 10:
-        raise ValueError(f"Complexity must be between 1 and 10, got: {complexity}")
+    # Upper bound follows COMPLEXITY_MAX_SCORE (sun-security fork) — the
+    # hardcoded 10 rejected valid 1-100 scores during the first backfill.
+    from .constants import get_max_score
+
+    max_score = get_max_score()
+    if not 1 <= complexity <= max_score:
+        raise ValueError(f"Complexity must be between 1 and {max_score}, got: {complexity}")
 
     # Get current labels
     current_labels = get_pr_labels(owner, repo, pr, token, timeout)

@@ -91,3 +91,44 @@ class TestMaxScoreOverride:
         monkeypatch.delenv("COMPLEXITY_MAX_SCORE", raising=False)
         text = load_prompt()
         assert "<int 1..10>" in text
+
+
+class TestMaxScoreRubricAndLabeler:
+    """Fork round 2: the rubric bands must scale too, and the labeler bound."""
+
+    def test_rubric_bands_scaled(self, monkeypatch):
+        from cli.analyze import load_prompt
+
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        text = load_prompt()
+        assert "1–100 integer scale" in text
+        assert "Low complexity (1–30)" in text
+        assert "Moderate complexity (31–60)" in text
+        assert "High complexity (61–100)" in text
+        assert "81–100: Very complex" in text
+        # No 1-10-scale anchors survive to re-anchor the model.
+        assert "(1–3)" not in text and "9–10:" not in text
+
+    def test_labeler_accepts_wide_scores(self, monkeypatch):
+        from cli import github
+
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        # The bound check happens before any network call; complexity=85 must
+        # pass validation (a network error afterwards would be a different
+        # exception than ValueError).
+        try:
+            github.update_complexity_label("o", "r", 1, 85, token="x", timeout=0.001)
+        except ValueError as e:
+            raise AssertionError(f"85 rejected under max=100: {e}")
+        except Exception:
+            pass  # network failure expected — validation passed
+
+    def test_labeler_still_rejects_over_max(self, monkeypatch):
+        from cli import github
+
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        try:
+            github.update_complexity_label("o", "r", 1, 150, token="x", timeout=0.001)
+            raise AssertionError("150 accepted")
+        except ValueError:
+            pass

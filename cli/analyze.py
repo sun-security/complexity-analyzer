@@ -87,19 +87,30 @@ def load_prompt(prompt_file: Optional[Path] = None) -> str:
 
 def _apply_max_score(prompt_text: str) -> str:
     """
-    Rewrite the embedded prompt's scale bounds when COMPLEXITY_MAX_SCORE is set
-    (sun-security fork). The default prompt states the 1-10 scale in exactly
-    three literal forms; rewriting them keeps prompt and clamp in agreement.
+    Rewrite the embedded prompt's scale when COMPLEXITY_MAX_SCORE is set
+    (sun-security fork). The default prompt states the 1-10 scale as a header
+    plus a full rubric of en-dash anchor bands ("Low complexity (1–3)",
+    "9–10: Very complex", …) — rewriting only the header leaves the model
+    anchored to 1-10 by the rubric (observed in the first backfill: 457/459
+    scores ≤8), so every en-dash range is scaled proportionally. Bands map
+    contiguously: lower L → (L-1)*f+1, upper U → U*f with f = max/10, which
+    also maps the 1–10 header itself to 1–max.
     """
     from .constants import DEFAULT_MAX_SCORE, get_max_score
 
     max_score = get_max_score()
     if max_score == DEFAULT_MAX_SCORE:
         return prompt_text
-    return (
-        prompt_text.replace("1–10 integer scale", f"1–{max_score} integer scale")
-        .replace("<int 1..10>", f"<int 1..{max_score}>")
-        .replace("between 1 and 10 inclusive", f"between 1 and {max_score} inclusive")
+
+    factor = max_score / DEFAULT_MAX_SCORE
+
+    def scale_range(m: "re.Match[str]") -> str:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        return f"{round((lo - 1) * factor) + 1}–{round(hi * factor)}"
+
+    prompt_text = re.sub(r"\b(\d+)–(\d+)\b", scale_range, prompt_text)
+    return prompt_text.replace("<int 1..10>", f"<int 1..{max_score}>").replace(
+        "between 1 and 10 inclusive", f"between 1 and {max_score} inclusive"
     )
 
 
