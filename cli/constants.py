@@ -29,3 +29,22 @@ DEFAULT_RETRY_DELAY = 1.0
 GITHUB_API_VERSION = "2022-11-28"
 GITHUB_API_BASE_URL = "https://api.github.com"
 GITHUB_PER_PAGE = 100  # Max items per page for GitHub API
+
+
+# --- sun-security fork addition -------------------------------------------
+# Upper bound of the complexity scale. Upstream hardcodes 1-10; we score on a
+# wider scale (1-100 in CI) for finer-grained analytics. Configured via env so
+# the flag doesn't have to thread through every CLI/analyzer signature.
+DEFAULT_MAX_SCORE = 10
+
+
+def get_max_score() -> int:
+    """COMPLEXITY_MAX_SCORE env override for the scale's upper bound (2-1000)."""
+    import os
+
+    raw = os.environ.get("COMPLEXITY_MAX_SCORE", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_SCORE
+    return value if 2 <= value <= 1000 else DEFAULT_MAX_SCORE

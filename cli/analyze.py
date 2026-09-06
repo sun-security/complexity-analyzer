@@ -73,6 +73,7 @@ def load_prompt(prompt_file: Optional[Path] = None) -> str:
         FileNotFoundError: If prompt file not found
     """
     if prompt_file:
+        # Custom prompt files are authored for their own scale — no rewriting.
         if not prompt_file.exists():
             raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
         return read_text_file(prompt_file)
@@ -81,7 +82,25 @@ def load_prompt(prompt_file: Optional[Path] = None) -> str:
     default_prompt_path = Path(__file__).parent / "prompt" / "default.txt"
     if not default_prompt_path.exists():
         raise FileNotFoundError(f"Default prompt not found: {default_prompt_path}")
-    return read_text_file(default_prompt_path)
+    return _apply_max_score(read_text_file(default_prompt_path))
+
+
+def _apply_max_score(prompt_text: str) -> str:
+    """
+    Rewrite the embedded prompt's scale bounds when COMPLEXITY_MAX_SCORE is set
+    (sun-security fork). The default prompt states the 1-10 scale in exactly
+    three literal forms; rewriting them keeps prompt and clamp in agreement.
+    """
+    from .constants import DEFAULT_MAX_SCORE, get_max_score
+
+    max_score = get_max_score()
+    if max_score == DEFAULT_MAX_SCORE:
+        return prompt_text
+    return (
+        prompt_text.replace("1–10 integer scale", f"1–{max_score} integer scale")
+        .replace("<int 1..10>", f"<int 1..{max_score}>")
+        .replace("between 1 and 10 inclusive", f"between 1 and {max_score} inclusive")
+    )
 
 
 def analyze_single_pr(
