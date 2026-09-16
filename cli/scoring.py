@@ -64,12 +64,17 @@ def parse_complexity_response(response_text: str) -> Dict[str, Any]:
         min_sum, max_sum = len(DIMENSION_KEYS), cap * len(DIMENSION_KEYS)
         total = round((raw - min_sum) * (max_score - 1) / (max_sum - min_sum)) + 1
         total = max(1, min(max_score, total))
+        # Risk is also surfaced on the same 1-max_score scale as the total so
+        # downstream consumers (risk labels, auto-approve risk gate) can
+        # threshold it consistently with the complexity score (PLT-3619).
+        risk = round((dims["risk"] - 1) * (max_score - 1) / (cap - 1)) + 1
         breakdown = ", ".join(f"{k} {v}" for k, v in dims.items())
         rationale = re.sub(r"\s+", " ", str(data.get("explanation", "")).strip())
         return {
             "complexity": total,
             "explanation": f"[{breakdown}] {rationale}".strip(),
             "dimensions": dims,
+            "risk": max(1, min(max_score, risk)),
         }
 
     if "complexity" not in data:
