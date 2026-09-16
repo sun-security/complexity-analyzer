@@ -12,10 +12,10 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import httpx
 import typer
 
-from .constants import DEFAULT_SLEEP_SECONDS, DEFAULT_TIMEOUT
+from .constants import DEFAULT_SLEEP_SECONDS, DEFAULT_TIMEOUT, use_dimension_scoring
 from .github import (
     GitHubAPIError,
-    has_complexity_label,
+    get_pr_labels,
     search_prs,
     update_complexity_label,
 )
@@ -590,6 +590,7 @@ def run_batch_analysis_with_labels(
     workers: int = 1,
     label_prs: bool = False,
     label_prefix: str = "complexity:",
+    risk_label_prefix: str = "risk:",
     github_token: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
     force: bool = False,
@@ -605,10 +606,16 @@ def run_batch_analysis_with_labels(
         workers: Number of parallel workers (1 = sequential, >1 = parallel)
         label_prs: If True, label PRs with complexity instead of (or in addition to) CSV
         label_prefix: Prefix for complexity labels
+        risk_label_prefix: Prefix for risk labels (dimension scoring only)
         github_token: GitHub token (required for labeling)
         timeout: Timeout for GitHub API calls
         force: If True, re-analyze PRs even if they already have a complexity label
     """
+    # Under dimension scoring every labeled PR should carry BOTH labels, so a
+    # PR with only a complexity label (pre-risk history) is re-analyzed — this
+    # is what lets a risk backfill run over already-scored history.
+    risk_expected = use_dimension_scoring()
+
     # When labeling (and not forcing), filter out PRs that already have complexity labels
     if label_prs and force:
         typer.echo("Force mode: will re-analyze and overwrite existing labels", err=True)
@@ -623,10 +630,14 @@ def run_batch_analysis_with_labels(
 
             try:
                 owner, repo, pr = parse_pr_url(pr_url)
-                existing_label = has_complexity_label(
-                    owner, repo, pr, github_token, label_prefix, timeout
+                labels_on_pr = get_pr_labels(owner, repo, pr, github_token, timeout)
+                fully_labeled = any(
+                    label.startswith(label_prefix) for label in labels_on_pr
+                ) and (
+                    not risk_expected
+                    or any(label.startswith(risk_label_prefix) for label in labels_on_pr)
                 )
-                if existing_label:
+                if fully_labeled:
                     already_labeled += 1
                 else:
                     unlabeled_urls.append(pr_url)
@@ -692,12 +703,18 @@ def run_batch_analysis_with_labels(
 
             label_applied = None
 
-            # Apply label if requested
+            # Apply label(s) if requested
             if label_prs and github_token:
                 owner, repo, pr = parse_pr_url(pr_url)
                 label_applied = update_complexity_label(
                     owner, repo, pr, complexity, github_token, label_prefix, timeout
                 )
+                risk = result.get("risk")
+                if risk is not None:
+                    risk_label = update_complexity_label(
+                        owner, repo, pr, risk, github_token, risk_label_prefix, timeout
+                    )
+                    label_applied = f"{label_applied} {risk_label}"
 
             return pr_url, complexity, explanation, label_applied, None
         except Exception as e:

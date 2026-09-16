@@ -32,6 +32,8 @@ from .constants import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_SLEEP_SECONDS,
     DEFAULT_TIMEOUT,
+    DIMENSION_KEYS,
+    use_dimension_scoring,
 )
 from .errors import ErrorHandler  # noqa: E402
 from .github import (  # noqa: E402
@@ -56,6 +58,28 @@ logger = get_logger()
 
 # Keep regex for direct URL validation in main callback
 _OWNER_REPO_RE = re.compile(r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
+
+
+def _heuristic_result(
+    explanation: str, model: str, owner: str, repo: str, pr: int, pr_url: str, title: str
+) -> dict:
+    """Score-1 result for PRs with no implementation work (no LLM call)."""
+    output = {
+        "score": 1,
+        "explanation": explanation,
+        "provider": "heuristic",
+        "model": model,
+        "tokens": None,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "repo": f"{owner}/{repo}",
+        "pr": pr,
+        "url": pr_url,
+        "title": title,
+    }
+    if use_dimension_scoring():
+        output["dimensions"] = {k: 1 for k in DIMENSION_KEYS}
+        output["risk"] = 1
+    return output
 
 
 def analyze_pr_to_dict(
@@ -134,23 +158,33 @@ def analyze_pr_to_dict(
     # Short-circuit automated cross-repo file sync PRs: they are mechanical
     # mirrors of upstream files, so there is no implementation effort to score.
     if is_automated_sync_pr(title, author_login, body):
-        return {
-            "score": 1,
-            "explanation": "Automated cross-repo file sync; no implementation work.",
-            "provider": "heuristic",
-            "model": "sync-shortcircuit",
-            "tokens": None,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "repo": f"{owner}/{repo}",
-            "pr": pr,
-            "url": pr_url,
-            "title": title,
-        }
+        return _heuristic_result(
+            "Automated cross-repo file sync; no implementation work.",
+            "sync-shortcircuit",
+            owner,
+            repo,
+            pr,
+            pr_url,
+            title,
+        )
 
     # Process diff
     truncated_diff, stats, selected_files = process_diff(
         diff_text, meta, max_tokens=max_tokens, hunks_per_file=hunks_per_file
     )
+
+    # Short-circuit PRs with nothing scoreable left after filtering (markdown,
+    # lockfiles, comment/whitespace-only changes): no LLM call needed.
+    if not selected_files:
+        return _heuristic_result(
+            "Documentation/comment-only change; no scoreable code.",
+            "docs-only-shortcircuit",
+            owner,
+            repo,
+            pr,
+            pr_url,
+            title,
+        )
 
     # Format prompt input
     diff_for_prompt = make_prompt_input(pr_url, title, stats, selected_files, truncated_diff)
@@ -177,6 +211,11 @@ def analyze_pr_to_dict(
         "url": pr_url,
         "title": title,
     }
+    # Dimension scoring only: raw per-dimension sub-scores plus risk rescaled
+    # onto the same 1-max scale as the total (PLT-3619).
+    if "dimensions" in result:
+        output["dimensions"] = result["dimensions"]
+        output["risk"] = result["risk"]
 
     return output
 
@@ -320,18 +359,18 @@ def _analyze_pr_impl(
             typer.echo(md)
         else:
             # JSON output
-            json_output = json.dumps(
-                {
-                    "score": output["score"],
-                    "explanation": output["explanation"],
-                    "provider": output["provider"],
-                    "model": output["model"],
-                    "tokens": output.get("tokens"),
-                    "timestamp": output["timestamp"],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
+            json_fields = {
+                "score": output["score"],
+                "explanation": output["explanation"],
+                "provider": output["provider"],
+                "model": output["model"],
+                "tokens": output.get("tokens"),
+                "timestamp": output["timestamp"],
+            }
+            if "dimensions" in output:
+                json_fields["dimensions"] = output["dimensions"]
+                json_fields["risk"] = output["risk"]
+            json_output = json.dumps(json_fields, ensure_ascii=False, indent=2)
             typer.echo(json_output)
 
         # Set GitHub Action outputs
@@ -507,6 +546,11 @@ def batch_analyze(
     ),
     label_prefix: str = typer.Option(
         "complexity:", "--label-prefix", help="Prefix for complexity labels (used with --label)"
+    ),
+    risk_label_prefix: str = typer.Option(
+        "risk:",
+        "--risk-label-prefix",
+        help="Prefix for risk labels (applied with --label under dimension scoring)",
     ),
     force: bool = typer.Option(
         False, "--force", "-f", help="Re-analyze PRs even if they already have a complexity label"
@@ -714,6 +758,7 @@ def batch_analyze(
             workers=workers,
             label_prs=label,
             label_prefix=label_prefix,
+            risk_label_prefix=risk_label_prefix,
             github_token=github_token,
             timeout=timeout,
             force=force,
@@ -810,6 +855,11 @@ def label_pr(
     label_prefix: str = typer.Option(
         "complexity:", "--label-prefix", help="Prefix for the complexity label"
     ),
+    risk_label_prefix: str = typer.Option(
+        "risk:",
+        "--risk-label-prefix",
+        help="Prefix for the risk label (applied only under dimension scoring)",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Analyze but don't update label"),
     openai_api_key: Optional[str] = typer.Option(None, "--openai-api-key", help="OpenAI API key"),
     github_token: Optional[str] = typer.Option(None, "--github-token", help="GitHub token"),
@@ -900,29 +950,36 @@ def label_pr(
             raise typer.Exit(1)
 
         complexity = output["score"]
+        risk = output.get("risk")
         typer.echo(f"Complexity score: {complexity}/10", err=True)
+        if risk is not None:
+            typer.echo(f"Risk score: {risk}", err=True)
         typer.echo(f"Explanation: {output['explanation']}", err=True)
 
-        # Update label
+        # Update labels (risk only exists under dimension scoring)
+        pending = [(label_prefix, complexity)]
+        if risk is not None:
+            pending.append((risk_label_prefix, risk))
         if dry_run:
-            label_name = f"{label_prefix}{complexity}"
-            typer.echo(f"Dry run: Would set label '{label_name}'", err=True)
+            for prefix, value in pending:
+                typer.echo(f"Dry run: Would set label '{prefix}{value}'", err=True)
         else:
-            typer.echo("Updating PR label...", err=True)
-            try:
-                label_name = update_complexity_label(
-                    owner=owner,
-                    repo=repo,
-                    pr=pr,
-                    complexity=complexity,
-                    token=final_github_token,
-                    label_prefix=label_prefix,
-                    timeout=timeout,
-                )
-                typer.echo(f"Label set: {label_name}", err=True)
-            except GitHubAPIError as e:
-                typer.echo(f"Failed to update label: {e}", err=True)
-                raise typer.Exit(1)
+            typer.echo("Updating PR labels...", err=True)
+            for prefix, value in pending:
+                try:
+                    label_name = update_complexity_label(
+                        owner=owner,
+                        repo=repo,
+                        pr=pr,
+                        complexity=value,
+                        token=final_github_token,
+                        label_prefix=prefix,
+                        timeout=timeout,
+                    )
+                    typer.echo(f"Label set: {label_name}", err=True)
+                except GitHubAPIError as e:
+                    typer.echo(f"Failed to update label: {e}", err=True)
+                    raise typer.Exit(1)
 
         # Output result as JSON
         result = {
@@ -934,6 +991,10 @@ def label_pr(
             "url": final_pr_url,
             "dry_run": dry_run,
         }
+        if risk is not None:
+            result["risk"] = risk
+            result["risk_label"] = f"{risk_label_prefix}{risk}"
+            result["dimensions"] = output.get("dimensions")
         typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
         # Set GitHub Action outputs if available
@@ -941,6 +1002,9 @@ def label_pr(
             with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                 f.write(f"score={complexity}\n")
                 f.write(f"label={label_prefix}{complexity}\n")
+                if risk is not None:
+                    f.write(f"risk={risk}\n")
+                    f.write(f"risk_label={risk_label_prefix}{risk}\n")
 
                 # Explanation (handle multiline)
                 explanation = output["explanation"]

@@ -113,6 +113,9 @@ You will typically see these fields:
    - Contains: PR URL, title, high-level stats summary, file list, and a
      unified diff between `--- DIFF START ---` and `--- DIFF END ---`.
    - The diff may be large or truncated.
+   - Markdown/docs files, lockfiles, and full-line comment or blank-line
+     changes are pre-stripped from both the diff and the stats — score only
+     the code you see; do not try to compensate for stripped content.
    - Many added/changed lines may be static data (CSV rows, JSON dependency
      blobs, YAML config, lockfiles) rather than executable logic — these count
      toward NO dimension beyond a minimal scope contribution.

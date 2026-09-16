@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import DEFAULT_HUNKS_PER_FILE, DEFAULT_MAX_TOKENS
@@ -108,6 +109,103 @@ def parse_diff_sections(
         files[current_file] = current_lines
 
     return files
+
+
+# Comment stripping (sun-security fork, PLT-3619): full-line comment and
+# blank-line changes carry no implementation complexity, so they are removed
+# from the scored diff. Detection is lexical (by extension), deliberately
+# conservative: only lines that are ENTIRELY a comment are dropped — a code
+# line with a trailing comment counts as code. Block-comment bodies are only
+# recognized by convention (leading `*` / `<!-- ... -->` on one line); an
+# unmarked interior line of a block comment passes through as code, which just
+# means the LLM sees slightly more than necessary.
+_HASH_COMMENT_EXTS = frozenset(
+    "py pyi sh bash zsh rb yml yaml toml tf tfvars mk cmake nix r pl pm ps1".split()
+)
+_SLASH_COMMENT_EXTS = frozenset(
+    "js jsx ts tsx mjs cjs go java kt kts c h cc cpp cxx hpp cs php rs swift scala m mm groovy dart proto".split()
+)
+_DASH_COMMENT_EXTS = frozenset("sql lua hs".split())
+_BLOCK_COMMENT_EXTS = _SLASH_COMMENT_EXTS | frozenset("css scss less".split())
+_MARKUP_COMMENT_EXTS = frozenset("html htm xml vue svelte".split())
+
+
+def is_comment_line(content: str, ext: str) -> bool:
+    """True if a changed line's content (marker stripped) is comment-only."""
+    content = content.strip()
+    if ext in _HASH_COMMENT_EXTS:
+        return content.startswith("#")
+    if ext in _DASH_COMMENT_EXTS:
+        return content.startswith("--")
+    if ext in _MARKUP_COMMENT_EXTS:
+        return content.startswith("<!--") and content.endswith("-->")
+    if ext in _BLOCK_COMMENT_EXTS:
+        if ext in _SLASH_COMMENT_EXTS and content.startswith("//"):
+            return True
+        if content.startswith("/*") and content.endswith("*/"):
+            return True
+        # Doc-comment body/closer convention (` * text`, `*/`). Requires the
+        # space after `*` so dereferences like `*ptr = x` stay code.
+        return content in ("*", "*/") or content.startswith("* ")
+    return False
+
+
+def strip_comment_changes(lines: List[str], ext: str) -> Tuple[List[str], int, int]:
+    """
+    Drop comment-only and blank +/- lines from one file's diff lines, then drop
+    hunks left with no changes at all.
+
+    Args:
+        lines: One file's diff lines as produced by parse_diff_sections
+        ext: File extension (lowercase, no dot)
+
+    Returns:
+        Tuple of (filtered_lines, additions_kept, deletions_kept)
+    """
+    header: List[str] = []
+    hunks: List[List[str]] = []
+    current: Optional[List[str]] = None
+    for line in lines:
+        if line.startswith("@@ "):
+            current = [line]
+            hunks.append(current)
+        elif current is None:
+            header.append(line)
+        else:
+            current.append(line)
+
+    additions = deletions = 0
+    out = header[:]
+    for hunk in hunks:
+        kept = [hunk[0]]
+        changed = False
+        for line in hunk[1:]:
+            if line.startswith(("+", "-")):
+                content = line[1:].strip()
+                if not content or is_comment_line(content, ext):
+                    continue
+                changed = True
+                if line[0] == "+":
+                    additions += 1
+                else:
+                    deletions += 1
+            kept.append(line)
+        if changed:
+            out.extend(kept)
+    return out, additions, deletions
+
+
+def cap_hunks(lines: List[str], hunks_per_file: int) -> List[str]:
+    """Keep the file header plus at most hunks_per_file hunks."""
+    out: List[str] = []
+    count = 0
+    for line in lines:
+        if line.startswith("@@ "):
+            count += 1
+            if count > hunks_per_file:
+                break
+        out.append(line)
+    return out
 
 
 def filter_file(path: str) -> bool:
@@ -269,23 +367,42 @@ def process_diff(
     # Redact secrets
     redacted_diff = redact(diff_text)
 
-    # Parse into sections
-    sections = parse_diff_sections(redacted_diff, hunks_per_file)
+    # Parse WITHOUT the per-file hunk cap: comment-only hunks are stripped
+    # first so they can't crowd real ones out of the capped excerpt, and stats
+    # count the whole filtered change rather than just the excerpted hunks.
+    sections = parse_diff_sections(redacted_diff, hunks_per_file=sys.maxsize)
 
-    # Filter files
+    # Filter files, strip comment/blank-only changes, cap hunks
     selected_files: List[str] = []
     excerpt_lines: List[str] = []
+    additions = deletions = 0
     for fn, lines in sections.items():
         if not filter_file(fn):
             continue
+        lines, adds, dels = strip_comment_changes(lines, ext_from_filename(fn))
+        if adds + dels == 0:
+            # Comment/whitespace-only change — nothing scoreable in this file.
+            continue
         selected_files.append(fn)
-        excerpt_lines.extend(lines)
+        additions += adds
+        deletions += dels
+        excerpt_lines.extend(cap_hunks(lines, hunks_per_file))
 
     # Combine and truncate
     excerpt = "\n".join(excerpt_lines)
     truncated, _tok = truncate_to_token_limit(excerpt, max_tokens)
 
-    # Build stats
-    stats = build_stats(meta, selected_files)
+    # Stats reflect only scoreable content: markdown/lockfiles (filter_file)
+    # and comment/blank changes (strip_comment_changes) no longer inflate the
+    # counts the LLM sees.
+    stats = build_stats(
+        {
+            **meta,
+            "additions": additions,
+            "deletions": deletions,
+            "changed_files": len(selected_files),
+        },
+        selected_files,
+    )
 
     return truncated, stats, selected_files

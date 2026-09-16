@@ -160,3 +160,31 @@ class TestMaxScoreRubricAndLabeler:
             raise AssertionError("150 accepted")
         except ValueError:
             pass
+
+
+class TestRiskExposure:
+    """PLT-3619: the risk dimension is surfaced, rescaled to the total's scale."""
+
+    def test_risk_rescaled_to_max_score(self, monkeypatch):
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        r = parse_complexity_response(
+            '{"scope": 8, "logic": 15, "integration": 6, "testing": 11, "risk": 9, "explanation": "x"}'
+        )
+        # risk raw 9 on 1-20 → round((9-1)*99/19)+1 = 43 on 1-100
+        assert r["risk"] == 43
+
+    def test_risk_bounds(self, monkeypatch):
+        monkeypatch.setenv("COMPLEXITY_MAX_SCORE", "100")
+        lo = parse_complexity_response(
+            '{"scope":1,"logic":1,"integration":1,"testing":1,"risk":1,"explanation":"x"}'
+        )
+        hi = parse_complexity_response(
+            '{"scope":1,"logic":1,"integration":1,"testing":1,"risk":20,"explanation":"x"}'
+        )
+        assert lo["risk"] == 1
+        assert hi["risk"] == 100
+
+    def test_single_score_mode_has_no_risk(self, monkeypatch):
+        monkeypatch.delenv("COMPLEXITY_MAX_SCORE", raising=False)
+        r = parse_complexity_response('{"complexity": 5, "explanation": "x"}')
+        assert "risk" not in r
