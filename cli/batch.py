@@ -631,9 +631,7 @@ def run_batch_analysis_with_labels(
             try:
                 owner, repo, pr = parse_pr_url(pr_url)
                 labels_on_pr = get_pr_labels(owner, repo, pr, github_token, timeout)
-                fully_labeled = any(
-                    label.startswith(label_prefix) for label in labels_on_pr
-                ) and (
+                fully_labeled = any(label.startswith(label_prefix) for label in labels_on_pr) and (
                     not risk_expected
                     or any(label.startswith(risk_label_prefix) for label in labels_on_pr)
                 )
