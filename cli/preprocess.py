@@ -195,6 +195,34 @@ def strip_comment_changes(lines: List[str], ext: str) -> Tuple[List[str], int, i
     return out, additions, deletions
 
 
+# Test exclusion (sun-security fork, PLT-3782): test files are stripped from
+# the scored diff and the stats, the same way markdown and lockfiles are.
+#
+# The `testing` dimension asks for the effort a change DEMANDS to validate,
+# explicitly "not whether tests are present in the diff". Showing the model
+# the delivered test code contaminates exactly that judgement, and the lines
+# inflate `scope` on top: a one-line fix arriving with a hundred table cases
+# read as a large, hard change. Stripped, `testing` judges the production
+# change on its own terms, which is what the rubric asks for.
+#
+# Detection is by path convention and deliberately conservative: a helper that
+# merely supports tests but does not live under a test path counts as code,
+# which just means the model sees slightly more than necessary.
+TEST_PATH_RE = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|__mocks__|__snapshots__|testdata)/"
+    r"|_test\.[a-z0-9]+$"
+    r"|\.(?:test|spec)\.[a-z0-9]+$"
+    r"|(?:^|/)conftest\.py$"
+    r"|(?:^|/)test_[^/]+\.py$",
+    re.IGNORECASE,
+)
+
+
+def is_test_path(path: str) -> bool:
+    """True if a file is test code, judged by path convention alone."""
+    return bool(TEST_PATH_RE.search(path))
+
+
 def cap_hunks(lines: List[str], hunks_per_file: int) -> List[str]:
     """Keep the file header plus at most hunks_per_file hunks."""
     out: List[str] = []
@@ -346,6 +374,41 @@ def make_prompt_input(
     return header + (diff_excerpt or "") + "\n--- DIFF END ---"
 
 
+def _select_files(
+    sections: Dict[str, List[str]],
+    hunks_per_file: int,
+    exclude_tests: bool,
+) -> Tuple[List[str], List[str], int, int]:
+    """
+    Pick the scoreable files out of parsed diff sections.
+
+    Args:
+        sections: Per-file diff lines from parse_diff_sections
+        hunks_per_file: Maximum hunks to keep per file in the excerpt
+        exclude_tests: Drop files on a test path (see TEST_PATH_RE)
+
+    Returns:
+        Tuple of (selected_files, excerpt_lines, additions, deletions)
+    """
+    selected_files: List[str] = []
+    excerpt_lines: List[str] = []
+    additions = deletions = 0
+    for fn, lines in sections.items():
+        if not filter_file(fn):
+            continue
+        if exclude_tests and is_test_path(fn):
+            continue
+        lines, adds, dels = strip_comment_changes(lines, ext_from_filename(fn))
+        if adds + dels == 0:
+            # Comment/whitespace-only change — nothing scoreable in this file.
+            continue
+        selected_files.append(fn)
+        additions += adds
+        deletions += dels
+        excerpt_lines.extend(cap_hunks(lines, hunks_per_file))
+    return selected_files, excerpt_lines, additions, deletions
+
+
 def process_diff(
     diff_text: str,
     meta: Dict[str, Any],
@@ -373,28 +436,26 @@ def process_diff(
     sections = parse_diff_sections(redacted_diff, hunks_per_file=sys.maxsize)
 
     # Filter files, strip comment/blank-only changes, cap hunks
-    selected_files: List[str] = []
-    excerpt_lines: List[str] = []
-    additions = deletions = 0
-    for fn, lines in sections.items():
-        if not filter_file(fn):
-            continue
-        lines, adds, dels = strip_comment_changes(lines, ext_from_filename(fn))
-        if adds + dels == 0:
-            # Comment/whitespace-only change — nothing scoreable in this file.
-            continue
-        selected_files.append(fn)
-        additions += adds
-        deletions += dels
-        excerpt_lines.extend(cap_hunks(lines, hunks_per_file))
+    selected_files, excerpt_lines, additions, deletions = _select_files(
+        sections, hunks_per_file, exclude_tests=True
+    )
+
+    # A PR that is nothing but tests would otherwise arrive at the caller as
+    # "no scoreable files" and be short-circuited to 1 as a docs-only change,
+    # which is both the wrong score and the wrong reason. Score its tests
+    # instead; only a PR with nothing left at all falls through empty.
+    if not selected_files:
+        selected_files, excerpt_lines, additions, deletions = _select_files(
+            sections, hunks_per_file, exclude_tests=False
+        )
 
     # Combine and truncate
     excerpt = "\n".join(excerpt_lines)
     truncated, _tok = truncate_to_token_limit(excerpt, max_tokens)
 
-    # Stats reflect only scoreable content: markdown/lockfiles (filter_file)
-    # and comment/blank changes (strip_comment_changes) no longer inflate the
-    # counts the LLM sees.
+    # Stats reflect only scoreable content: markdown/lockfiles (filter_file),
+    # test files (is_test_path) and comment/blank changes
+    # (strip_comment_changes) no longer inflate the counts the LLM sees.
     stats = build_stats(
         {
             **meta,

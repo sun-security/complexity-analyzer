@@ -1,4 +1,4 @@
-Prompt-Version: 3-dimensions-anchored
+Prompt-Version: 4-tests-excluded
 
 You are given:
 - A pull request (PR) diff excerpt (which may be truncated),
@@ -67,7 +67,11 @@ Anchor ladders (authored for the default 1–20 dimension scale):
           services at once. Rare.
 
 4. `testing` — Effort the change demands to validate (judge the EFFORT the
-   change requires, not whether tests are present in the diff).
+   change requires, not whether tests are present in the diff). Test files are
+   stripped before you see the diff, so you cannot tell whether this PR shipped
+   tests, and you must not try to guess. Ask only: given this production
+   change, how much work would validating it take? A one-line fix stays at the
+   bottom of this ladder however many cases were written for it.
    1–3: trivially verifiable by inspection or an existing test.
    4–7: routine unit tests adapted/added along with the change.
    8–12: substantial new test coverage; behavior needs fixtures, fakes, or
@@ -113,9 +117,10 @@ You will typically see these fields:
    - Contains: PR URL, title, high-level stats summary, file list, and a
      unified diff between `--- DIFF START ---` and `--- DIFF END ---`.
    - The diff may be large or truncated.
-   - Markdown/docs files, lockfiles, and full-line comment or blank-line
-     changes are pre-stripped from both the diff and the stats — score only
-     the code you see; do not try to compensate for stripped content.
+   - Markdown/docs files, lockfiles, TEST FILES, and full-line comment or
+     blank-line changes are pre-stripped from both the diff and the stats —
+     score only the code you see; do not try to compensate for stripped
+     content.
    - Many added/changed lines may be static data (CSV rows, JSON dependency
      blobs, YAML config, lockfiles) rather than executable logic — these count
      toward NO dimension beyond a minimal scope contribution.
@@ -124,6 +129,8 @@ You will typically see these fields:
    - A machine-readable summary (additions, deletions, changedFiles, byExt,
      byLang, fileCount). Use it to judge whether the diff is dominated by data
      files vs code files. Raw line count is NOT complexity.
+   - These counts are post-stripping, so they describe production code only.
+     A PR that looks small here IS small, whatever else it touched.
 
 3. `title`
    - A short human-written description. Often indicates whether this is a
