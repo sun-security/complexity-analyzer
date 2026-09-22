@@ -189,3 +189,147 @@ class TestCommentStripping:
         assert "+# comment" not in excerpt
         # stats count ALL kept hunks, not just the excerpted ones
         assert stats["additions"] == 2
+
+
+class TestTestExclusion:
+    """PLT-3782: test files are stripped from the scored diff and the stats."""
+
+    def test_is_test_path_by_convention(self):
+        from cli.preprocess import is_test_path
+
+        assert is_test_path("services/libs/skillscan/risktype_test.go") is True
+        assert is_test_path("applications/packages/ui/src/catalog/skill.test.tsx") is True
+        assert is_test_path("applications/packages/ui/src/catalog/skill.spec.ts") is True
+        assert is_test_path("connectors/awsConnector/tests/test_auth.py") is True
+        assert is_test_path("connectors/awsConnector/conftest.py") is True
+        assert is_test_path("applications/apps/apollo-mcp/test/__snapshots__/usage.json") is True
+        assert is_test_path("services/catalog/internal/store/testdata/bundle.json") is True
+        assert is_test_path("__mocks__/fs.ts") is True
+
+    def test_is_test_path_leaves_production_code_alone(self):
+        from cli.preprocess import is_test_path
+
+        assert is_test_path("services/libs/skillscan/risktype.go") is False
+        assert is_test_path("applications/packages/ui/src/catalog/skill-risk-type.tsx") is False
+        assert is_test_path("connectors/awsConnector/src/client.py") is False
+        # A helper that merely supports tests is code unless it lives on a
+        # test path: the detection is conservative on purpose.
+        assert is_test_path("services/libs/testutil/fake_clock.go") is False
+        assert is_test_path("src/contest.py") is False
+
+    def test_process_diff_strips_test_files(self):
+        from cli.preprocess import process_diff
+
+        diff = (
+            "diff --git a/app/handler.go b/app/handler.go\n"
+            "--- a/app/handler.go\n"
+            "+++ b/app/handler.go\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-x := 1\n"
+            "+x := 2\n"
+            "diff --git a/app/handler_test.go b/app/handler_test.go\n"
+            "--- a/app/handler_test.go\n"
+            "+++ b/app/handler_test.go\n"
+            "@@ -1,1 +1,3 @@\n"
+            "+func TestHandler(t *testing.T) {}\n"
+            "+func TestHandlerEdge(t *testing.T) {}\n"
+            "+func TestHandlerErr(t *testing.T) {}\n"
+        )
+        meta = {"additions": 4, "deletions": 1, "changed_files": 2}
+        excerpt, stats, files = process_diff(diff, meta)
+
+        assert files == ["app/handler.go"]
+        assert "handler_test.go" not in excerpt
+        assert stats["additions"] == 1
+        assert stats["deletions"] == 1
+        assert stats["changedFiles"] == 1
+        assert stats["fileCount"] == 1
+        assert stats["byLang"] == {"Go": 1}
+
+    def test_one_line_change_with_many_tests_reads_as_one_line(self):
+        """The case this ticket exists for: 1 line of code, 100 test cases."""
+        from cli.preprocess import process_diff
+
+        cases = "".join(f"+func TestCase{i}(t *testing.T) {{}}\n" for i in range(100))
+        diff = (
+            "diff --git a/app/handler.go b/app/handler.go\n"
+            "--- a/app/handler.go\n"
+            "+++ b/app/handler.go\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-timeout := 30\n"
+            "+timeout := 60\n"
+            "diff --git a/app/handler_test.go b/app/handler_test.go\n"
+            "--- a/app/handler_test.go\n"
+            "+++ b/app/handler_test.go\n"
+            "@@ -1,1 +1,101 @@\n" + cases
+        )
+        meta = {"additions": 101, "deletions": 1, "changed_files": 2}
+        excerpt, stats, files = process_diff(diff, meta)
+
+        assert stats["additions"] == 1
+        assert stats["deletions"] == 1
+        assert stats["fileCount"] == 1
+        assert "TestCase42" not in excerpt
+
+    def test_tests_only_pr_falls_back_to_scoring_its_tests(self):
+        from cli.preprocess import process_diff
+
+        # Stripping everything would hand the caller "no scoreable files",
+        # which analyze_pr_to_dict reads as a docs-only change and scores 1.
+        # A tests-only PR is real work, so it is scored on its tests instead.
+        diff = (
+            "diff --git a/app/handler_test.go b/app/handler_test.go\n"
+            "--- a/app/handler_test.go\n"
+            "+++ b/app/handler_test.go\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+func TestNewCase(t *testing.T) {}\n"
+        )
+        meta = {"additions": 1, "deletions": 0, "changed_files": 1}
+        excerpt, stats, files = process_diff(diff, meta)
+
+        assert files == ["app/handler_test.go"]
+        assert "+func TestNewCase(t *testing.T) {}" in excerpt
+        assert stats["additions"] == 1
+        assert stats["changedFiles"] == 1
+
+    def test_docs_and_tests_only_pr_scores_its_tests(self):
+        from cli.preprocess import process_diff
+
+        # Markdown is dropped by filter_file before the test fallback runs, so
+        # the fallback must not resurrect it.
+        diff = (
+            "diff --git a/README.md b/README.md\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+More docs.\n"
+            "diff --git a/app/handler_test.go b/app/handler_test.go\n"
+            "--- a/app/handler_test.go\n"
+            "+++ b/app/handler_test.go\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+func TestNewCase(t *testing.T) {}\n"
+        )
+        meta = {"additions": 2, "deletions": 0, "changed_files": 2}
+        excerpt, stats, files = process_diff(diff, meta)
+
+        assert files == ["app/handler_test.go"]
+        assert "README.md" not in excerpt
+
+    def test_nothing_scoreable_at_all_stays_empty(self):
+        from cli.preprocess import process_diff
+
+        # The fallback must not rescue a genuinely empty PR: with no test
+        # files either, the docs-only shortcircuit is the right outcome.
+        diff = (
+            "diff --git a/README.md b/README.md\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+More docs.\n"
+        )
+        meta = {"additions": 1, "deletions": 0, "changed_files": 1}
+        excerpt, stats, files = process_diff(diff, meta)
+
+        assert files == []
+        assert excerpt == ""
+        assert stats["additions"] == 0
